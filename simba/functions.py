@@ -353,14 +353,14 @@ def identify_baselines(nx, U, U_val, U_test, Y, Y_val, Y_test, x0, x0_val, x0_te
 
     if IS_MATLAB and id_mat:
         _, names, times, train_ids, validation_ids,test_ids = matlab_baselines(parameters['path_to_matlab'], names, times, train_ids, validation_ids, test_ids,
-                                                                                        nx=nx, U=U, U_val=U_val, U_test=U_test, Y=Y, Y_val=Y_val, Y_test=Y_test, x0=x0,
+                                                                                        nx=nx, U=U, U_val=U_val, U_test=U_test, Y=Y, Y_val=Y_val, Y_test=Y_test,
                                                                                         dt=dt, stable_A=parameters['stable_A'], learn_x0=parameters['learn_x0'])
 
     return names, baselines, times, train_ids, validation_ids, test_ids
 
 
 def matlab_baselines(path_to_matlab, names, times, train_ids, validation_ids, test_ids,
-                     nx, U, U_val, U_test, Y, Y_val, Y_test, x0, stable_A, learn_x0, dt=None):
+                     nx, U, U_val, U_test, Y, Y_val, Y_test, stable_A, learn_x0, dt=None):
     
     eng = matlab.engine.start_matlab()
     if path_to_matlab is not None:
@@ -393,6 +393,100 @@ def matlab_baselines(path_to_matlab, names, times, train_ids, validation_ids, te
     test_ids += [np.stack([np.array(m_arx_test)[:,i*ny:(i+1)*ny] for i in range(Y_test.shape[0])]), np.stack([np.array(m_n4sid_test)[:,i*ny:(i+1)*ny] for i in range(Y_test.shape[0])]), np.stack([np.array(m_pem_test)[:,i*ny:(i+1)*ny] for i in range(Y_test.shape[0])])]
 
     return matrices, names, times, train_ids, validation_ids, test_ids
+
+def matlab_init(parameters, nx, U, U_val, U_test, Y, Y_val, Y_test, dt=None):
+    
+    eng = matlab.engine.start_matlab()
+    if parameters['path_to_matlab'] is not None:
+        eng.cd(parameters['path_to_matlab'], nargout=0)
+
+    m_A = matlab.double(parameters['A_init']) if parameters['A_init'] is not None else matlab.logical(False)
+    m_B = matlab.double(parameters['B_init']) if parameters['B_init'] is not None else matlab.logical(False)
+    m_C = matlab.double(parameters['C_init']) if parameters['C_init'] is not None else matlab.logical(False)
+    m_D = matlab.double(parameters['D_init']) if parameters['D_init'] is not None else matlab.logical(False)
+    
+    m_mask_A = matlab.double(parameters['mask_A']*1.) if parameters['mask_A'] is not None else matlab.logical(False)
+    m_mask_B = matlab.double(parameters['mask_B']*1.) if parameters['mask_B'] is not None else matlab.logical(False)
+    m_mask_C = matlab.double(parameters['mask_C']*1.) if parameters['mask_C'] is not None else matlab.logical(False)
+    m_mask_D = matlab.double(parameters['mask_D']*1.) if parameters['mask_D'] is not None else matlab.logical(False)
+
+    m_U = matlab.double(U[0,:,:]) if isinstance(U, np.ndarray) else matlab.double(U[0,:,:].cpu().detach().numpy())
+    m_Y = matlab.double(Y[0,:,:]) if isinstance(Y, np.ndarray) else matlab.double(Y[0,:,:].cpu().detach().numpy())
+    m_U_val = matlab.double(U_val[0,:,:]) if isinstance(U_val, np.ndarray) else matlab.double(U_val[0,:,:].cpu().detach().numpy())
+    m_Y_val = matlab.double(Y_val[0,:,:]) if isinstance(Y_val, np.ndarray) else matlab.double(Y_val[0,:,:].cpu().detach().numpy())
+    m_U_test = [matlab.double(U_test[t,:,:]) if isinstance(U_test, np.ndarray) else matlab.double(U_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+    m_Y_test = [matlab.double(Y_test[t,:,:]) if isinstance(Y_test, np.ndarray) else matlab.double(Y_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+
+    m_enforce_stability = matlab.logical(parameters['stable_A'])
+    Ts = dt if dt is not None else 1.
+    m_fit_x0 = 'estimate' if parameters['learn_x0'] else 'zero'
+    nx = matlab.double(nx)
+
+    matlab_A, matlab_B, matlab_C, matlab_D, matlab_x0, m_time, m_train, m_val, m_test = eng.init_simba(nx, m_A, m_B, m_C, m_D, m_mask_A, m_mask_B, m_mask_C, m_mask_D, m_U, m_Y, m_U_val, m_Y_val, m_U_test, m_Y_test, Ts, m_enforce_stability, m_fit_x0, nargout=9)
+    eng.quit() 
+    matrices = [np.array(matlab_A), np.array(matlab_B), np.array(matlab_C), np.array(matlab_D), np.array(matlab_x0)]
+    return  matrices, m_time, np.array(m_train), np.array(m_val), np.array(m_test)
+
+def matlab_structure(eng, A, B, C, D, mask_A, mask_B, mask_C, mask_D, U, U_val, U_test, Y, Y_val, Y_test, stable_A, dt=None):
+    
+    m_A = matlab.double(A)
+    m_B = matlab.double(B)
+    m_C = matlab.double(C)
+    m_D = matlab.double(D)
+    ny = C.shape[0]
+    
+    m_mask_A = matlab.double(mask_A)
+    m_mask_B = matlab.double(mask_B)
+    m_mask_C = matlab.double(mask_C)
+    m_mask_D = matlab.double(mask_D)
+
+    m_U = matlab.double(U[0,:,:])  if isinstance(U, np.ndarray) else matlab.double(U[0,:,:].cpu().detach().numpy())
+    m_Y = matlab.double(Y[0,:,:]) if isinstance(Y, np.ndarray) else matlab.double(Y[0,:,:].cpu().detach().numpy())
+    m_U_val = matlab.double(U_val[0,:,:]) if isinstance(U_val, np.ndarray) else matlab.double(U_val[0,:,:].cpu().detach().numpy())
+    m_Y_val = matlab.double(Y_val[0,:,:]) if isinstance(Y_val, np.ndarray) else matlab.double(Y_val[0,:,:].cpu().detach().numpy())
+    m_U_test = [matlab.double(U_test[t,:,:]) if isinstance(U_test, np.ndarray) else matlab.double(U_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+    m_Y_test = [matlab.double(Y_test[t,:,:]) if isinstance(Y_test, np.ndarray) else matlab.double(Y_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+
+    m_enforce_stability = matlab.logical(stable_A)
+    Ts = dt if dt is not None else 1.
+
+    m_times, m_train, m_val, m_test = eng.run_structure(m_A, m_B, m_C, m_D, m_mask_A, m_mask_B, m_mask_C, m_mask_D, m_U, m_Y, m_U_val, m_Y_val, m_U_test, m_Y_test, Ts, m_enforce_stability, nargout=4)
+
+    train = [np.array(m_train)[:,i*ny: (i+1)*ny] for i in range(8)]
+    val = [np.array(m_val)[:,i*ny: (i+1)*ny] for i in range(8)]
+    test = [np.array(m_test)[:,i*ny: (i+1)*ny] for i in range(8)]
+    return  list(np.array(m_times).flatten()), train, val, test
+
+def matlab_onlyA(eng, A, B, C, D, mask_A, mask_B, mask_C, mask_D, U, U_val, U_test, Y, Y_val, Y_test, stable_A, dt=None):
+    
+    m_A = matlab.double(A)
+    m_B = matlab.double(B)
+    m_C = matlab.double(C)
+    m_D = matlab.double(D)
+    ny = C.shape[0]
+    
+    m_mask_A = matlab.double(mask_A)
+    m_mask_B = matlab.double(mask_B)
+    m_mask_C = matlab.double(mask_C)
+    m_mask_D = matlab.double(mask_D)
+
+    m_U = matlab.double(U[0,:,:])  if isinstance(U, np.ndarray) else matlab.double(U[0,:,:].cpu().detach().numpy())
+    m_Y = matlab.double(Y[0,:,:]) if isinstance(Y, np.ndarray) else matlab.double(Y[0,:,:].cpu().detach().numpy())
+    m_U_val = matlab.double(U_val[0,:,:]) if isinstance(U_val, np.ndarray) else matlab.double(U_val[0,:,:].cpu().detach().numpy())
+    m_Y_val = matlab.double(Y_val[0,:,:]) if isinstance(Y_val, np.ndarray) else matlab.double(Y_val[0,:,:].cpu().detach().numpy())
+    m_U_test = [matlab.double(U_test[t,:,:]) if isinstance(U_test, np.ndarray) else matlab.double(U_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+    m_Y_test = [matlab.double(Y_test[t,:,:]) if isinstance(Y_test, np.ndarray) else matlab.double(Y_test[t,:,:].cpu().detach().numpy()) for t in range(len(Y_test))]
+
+    m_enforce_stability = matlab.logical(stable_A)
+    Ts = dt if dt is not None else 1.
+
+    m_times, m_train, m_val, m_test = eng.run_onlyA(m_A, m_B, m_C, m_D, m_mask_A, m_mask_B, m_mask_C, m_mask_D, m_U, m_Y, m_U_val, m_Y_val, m_U_test, m_Y_test, Ts, m_enforce_stability, nargout=4)
+
+    exp = 4
+    train = [np.array(m_train)[:,i*ny: (i+1)*ny] for i in range(exp)]
+    val = [np.array(m_val)[:,i*ny: (i+1)*ny] for i in range(exp)]
+    test = [np.array(m_test)[:,i*ny: (i+1)*ny] for i in range(exp)]
+    return  list(np.array(m_times).flatten()), train, val, test
 
 def matlab_sub(eng, U, U_val, U_test, X, X_val, X_test):
 

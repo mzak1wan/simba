@@ -8,7 +8,7 @@ from torch import optim
 import torch.nn.functional as F
 
 from simba.util import check_and_initialize_data, generate_A_Hurwitz, normalize, inverse_normalize, elapsed_timer, make_tensors, break_trajectories, put_in_batch_form, format_elapsed_time
-from simba.functions import matlab_baselines, identify_baselines
+from simba.functions import matlab_init, identify_baselines
 from simba.parameters import base_parameters, check_parameters, check_sizes, IS_MATLAB, IS_SIPPY
 
 class SIMBa(nn.Module):
@@ -270,6 +270,7 @@ class SIMBaWrapper(SIMBa):
         self.horizon_val = parameters['horizon_val']
         self.stride_val = parameters['stride_val']
         # Initialization parameters
+        self.prior_knowledge = parameters['prior_knowledge']
         self.init_from_matlab_or_ls = parameters['init_from_matlab_or_ls']
         self.init_lr = parameters['init_learning_rate']
         self.init_loss = parameters['init_loss']
@@ -464,13 +465,19 @@ class SIMBaWrapper(SIMBa):
 
         # The exact inililization only works when A is not sparse (since the A provided
         # by classical methods will be full)
-        if self.naive_A and (self.mask_A is None):
+        if self.naive_A: # and (self.mask_A is None):
             if self.max_eigenvalue > torch.abs(torch.linalg.eigvals(A)).max():
                 self.A_ = nn.Parameter(torch.tensor(A, dtype=torch.float64, device=self.device), requires_grad=self.learn_A)
                 self.max_eig_param = nn.Parameter(torch.logit(torch.abs(torch.linalg.eigvals(A)).max() / self.max_eigenvalue), True)
                 print(f"\nInitilized A exactly!")
-
+                approximate = False
+            else:
+                print(f"The desired maximum absolute eigenvalue of A {self.max_eigenvalue} is higher than the one found at initialization - A cannot be fit exactly.")
+                approximate = True
         else:
+            approximate = True
+        
+        if approximate:
             if (self.verbose > 0) and not self.auto_fit:
                 print(f"\nInitilization starts, fitting A!")
                 print('Epoch\tFitting loss')
@@ -498,7 +505,7 @@ class SIMBaWrapper(SIMBa):
             if (self.verbose > 0) and not self.auto_fit:
                 print(f"Total initialization time:\t{format_elapsed_time(self.init_times[-1])}")
                 print(f"Best loss at epoch {np.argmin(self.init_losses)}:\t{np.min(self.init_losses):.2E}")
-        self.overwrite_best_performance()
+            self.overwrite_best_performance()
         
     def initialize(self, U, U_val, U_test, X, X_val, X_test, Y, Y_val, Y_test, x0, x0_val, x0_test, baselines_to_use=None):
 
@@ -520,18 +527,14 @@ class SIMBaWrapper(SIMBa):
             val_err = np.inf
             if IS_MATLAB:
                 alg = 'Matlab'
-                matrices, names, _, train_ids, validation_ids, test_ids = matlab_baselines(path_to_matlab=self.params['path_to_matlab'],
-                                                                                names=[], times=[], train_ids=[], validation_ids=[],
-                                                                                nx=self.nx, U=U, U_val=U_val, Y=Y, Y_val=Y_val, x0=x0,
-                                                                                U_test=U_test, Y_test=Y_test, test_ids=[],
-                                                                                dt=None, stable_A=self.stable_A, learn_x0=self.learn_x0)
-                val_err = np.min([self.val_loss(torch.tensor(val_id, dtype=torch.float64, device=self.device), Y_val[0,:,:]) for val_id in validation_ids[1:]])
-                totake = np.argmin([self.val_loss(torch.tensor(val_id, dtype=torch.float64, device=self.device), Y_val[0,:,:]) for val_id in validation_ids[1:]]) + 1
-                train_id = torch.tensor(train_ids[totake], dtype=torch.float64, device=self.device)
-                validation_id = torch.tensor(validation_ids[totake], dtype=torch.float64, device=self.device)
-                test_id = torch.tensor(test_ids[totake], dtype=torch.float64, device=self.device)
+                matrices, _, train_id, validation_id, test_id = matlab_init(parameters=self.params, nx=self.nx, U=U, U_val=U_val,
+                                                                            Y=Y, Y_val=Y_val, U_test=U_test, Y_test=Y_test)
+                val_err = self.val_loss(torch.tensor(validation_id, dtype=torch.float64, device=self.device), Y_val[0,:,:])
+                train_id = torch.tensor(train_id, dtype=torch.float64, device=self.device)
+                validation_id = torch.tensor(validation_id, dtype=torch.float64, device=self.device)
+                test_id = torch.tensor(test_id, dtype=torch.float64, device=self.device)
 
-            if IS_SIPPY:
+            if (IS_SIPPY) and (not self.prior_knowledge):
                 if baselines_to_use is None:
                     from simba.parameters import baselines_to_use
                 baselines = {k:False if (('arm' in k) or ('arx' in k) or ('oe_' in k) or ('bj' in k) or ('gen' in k)) else v for k,v in baselines_to_use.items()}
@@ -568,7 +571,7 @@ class SIMBaWrapper(SIMBa):
 
         if (self.verbose > 0) and not self.auto_fit and self.input_output:
             print(f"\n{alg} performance (Train and validation are only measured on the\nfirst trajectory if there are several for now):\nTrain loss\tVal loss\tTest loss")
-            print(f"{self.train_loss(train_id,Y[0,:,:]):.2E}\t{self.val_loss(validation_id, Y_val[0,:,:]):.2E}\t{self.val_loss(test_id, Y_test):.2E}")
+            print(f"{self.train_loss(train_id,Y[0,:,:]):.2E}\t{self.val_loss(validation_id, Y_val[0,:,:]):.2E}\t{self.val_loss(test_id, Y_test[0,:,:]):.2E}")
 
         self.is_initialized = True
 
